@@ -8,18 +8,18 @@ Works on iPhone Safari (and desktop browsers). Add it to your Home Screen for a 
 
 ## Controls
 
+One tap does the right thing — no swapping between items.
+
 **Phone**
-- Tap a lane, or swipe up a lane, to throw a pint of Guinness at the zombies.
-- Tap a regular (or their speech bubble) to serve whatever they're after — whiskey or a toastie.
-- Or choose **Whiskey** / **Toastie** at the bottom and tap their lane.
-- Don't hit the regulars with a pint. Each miss pour makes you drunker (the screen sways, and you may throw into the wrong lane).
+- Tap a regular (or their speech bubble) to serve them. They automatically get the whiskey or toastie they asked for.
+- Tap a lane, tap a zombie, or swipe up to throw a pint of Guinness.
+- Don't hit the regulars with a pint. Each miss pour makes you drunker (the screen sways, and throws may drift).
 - Zombies that reach the bar cost a life. Three lives, or a full drunk meter, and it's closing time.
 
 **Desktop**
-- Click a lane to throw or serve, same as tap.
+- Click a regular to serve, click a lane or zombie to throw a pint — same as tap.
 - Arrow keys or A/D move the bartender; Up / Space throws a pint.
-- 1 / 2 / 3 select Guinness, whiskey or toastie.
-- Q serves whiskey in the current lane, E serves a toastie.
+- Down, S or Enter serves the nearest regular in the bartender's lane.
 - M mutes.
 
 High scores are saved on the device. There's a Share button on the game-over screen so you can send mates the link (and your score).

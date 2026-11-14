@@ -2,7 +2,7 @@
   "name": "Polly's Pub",
   "short_name": "Polly's Pub",
   "description": "Throw pints of Guinness at zombies and serve the regulars. Don't get drunk or they'll eat you!",
-  "start_url": "./",
+  "start_url": "./?v=2",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",

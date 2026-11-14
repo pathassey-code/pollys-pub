@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-game-version="2">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
@@ -8,11 +8,16 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Polly's Pub">
   <meta name="theme-color" content="#1a3328">
+  <meta name="game-version" content="2">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
   <meta name="description" content="Throw pints of Guinness at zombies and serve the regulars at Polly's Pub. Don't hit the regulars or you'll get drunk — and the zombies will eat you!">
   <title>Polly's Pub</title>
-  <link rel="manifest" href="manifest.webmanifest">
-  <link rel="icon" type="image/png" sizes="32x32" href="favicon.png">
-  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="manifest" href="manifest.webmanifest?v=2">
+  <link rel="icon" type="image/png" sizes="32x32" href="favicon.png?v=2">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png?v=2">
+  <!-- pollys-pub v2 one-tap serve -->
   <style>
     :root {
       --sat-top: env(safe-area-inset-top, 0px);
@@ -76,7 +81,9 @@
   let pints = [];
   let particles = [];
   let floaters = [];
-  let selected = "guinness";
+  let selected = "guinness"; // leftover unused for item modes; always auto-serve
+  let lastServed = null;
+  let testLock = false;
   let bartenderLane = 1;
   let bartenderX = 0;
   let throwCd = 0;
@@ -144,7 +151,7 @@
     }
     const S = gw / 390;
     const hudH = (framed ? 78 : 72 + sTop);
-    const btnH = 62 * S;
+    const btnH = 46 * S;
     const counterH = 36 * S;
     const barH = btnH + counterH + (framed ? 12 : Math.max(10, sBot + 6));
     const playY = gy + hudH;
@@ -340,6 +347,8 @@
     score = 0; wave = 0; lives = MAX_LIVES; drunk = 0; combo = 0;
     zombies = []; regulars = []; pints = []; particles = []; floaters = [];
     selected = "guinness";
+    lastServed = null;
+    testLock = false;
     bartenderLane = 1;
     bartenderX = laneCenter(1);
     throwCd = 0; serveCd = 0;
@@ -415,20 +424,33 @@
   }
 
   function spawnRegular(lane, order) {
+    let waitY = L.floorY + L.floorH * rand(0.34, 0.74);
+    for (let attempt = 0; attempt < 8; attempt++) {
+      let ok = true;
+      for (let i = 0; i < regulars.length; i++) {
+        const o = regulars[i];
+        if (o.lane === lane && !o.leaving && Math.abs((o.waitY || o.y) - waitY) < 70 * L.S) ok = false;
+      }
+      if (ok) break;
+      waitY = L.floorY + L.floorH * rand(0.32, 0.78);
+    }
     regulars.push({
       lane: lane,
       y: L.floorY + 8 * L.S,
       speed: (70 + wave * 3) * L.S,
-      waitY: L.floorY + L.floorH * rand(0.34, 0.74),
+      waitY: waitY,
       arriving: true,
       order: order,
       patience: Math.max(5.2, 11.2 - wave * 0.45),
       maxPatience: Math.max(5.2, 11.2 - wave * 0.45),
       variant: irand(0, 4),
       leaving: false,
+      serving: false,
       leaveVX: 0,
+      xOff: (lane % 2 === 0 ? -1 : 1) * 7 * L.S,
       t: 0,
-      bubblePop: 0
+      bubblePop: 0,
+      happy: 0
     });
   }
 
@@ -447,7 +469,7 @@
   }
 
   function throwPint(lane) {
-    if (mode !== "playing" || throwCd > 0) return;
+    if (mode !== "playing" || throwCd > 0) return false;
     bartenderLane = lane;
     pints.push({
       lane: lane,
@@ -459,42 +481,67 @@
     throwCd = 0.2;
     SFX.throw();
     burst(laneCenter(lane), L.counterY - 6 * L.S, "rgba(245,236,214,0.9)", 4, 50 * L.S);
+    return true;
   }
 
   function serveRegular(r) {
-    if (mode !== "playing" || !r || r.leaving) return;
+    if (mode !== "playing" || !r || r.leaving || r.serving) return false;
     bartenderLane = r.lane;
     fulfill(r);
+    return true;
   }
 
-  function serveLane(lane, item) {
-    if (mode !== "playing") return;
-    bartenderLane = lane;
+  function serveFrontInLane(lane) {
+    if (mode !== "playing") return false;
     let best = null, bestY = -1;
     for (let i = 0; i < regulars.length; i++) {
       const r = regulars[i];
-      if (r.lane === lane && !r.leaving && r.order === item) {
+      if (r.lane === lane && !r.leaving && !r.serving) {
         if (r.y > bestY) { bestY = r.y; best = r; }
       }
     }
-    if (best) fulfill(best);
-    else {
-      SFX.wrong();
-      floater(laneCenter(lane), L.counterY - 20 * L.S, "Nobody asked for that!", "#f0c8a0");
+    if (best) return serveRegular(best);
+    SFX.wrong();
+    floater(laneCenter(lane), L.counterY - 24 * L.S, "No one to serve!", "#f0c8a0");
+    return false;
+  }
+
+  function serveLane(lane, item) {
+    // Kept for a clear wrong-order path; one-tap play auto-serves the right item.
+    if (mode !== "playing") return false;
+    bartenderLane = lane;
+    let match = null, other = null, bestY = -1, otherY = -1;
+    for (let i = 0; i < regulars.length; i++) {
+      const r = regulars[i];
+      if (r.lane !== lane || r.leaving || r.serving) continue;
+      if (r.order === item) {
+        if (r.y > bestY) { bestY = r.y; match = r; }
+      } else if (r.y > otherY) { otherY = r.y; other = r; }
     }
+    if (match) return serveRegular(match);
+    SFX.wrong();
+    const at = other ? other.y - 50 * L.S : L.counterY - 24 * L.S;
+    floater(laneCenter(lane), at, "Wrong order!", "#ff8a7a");
+    return false;
   }
 
   function fulfill(r) {
-    if (r.leaving) return;
+    if (r.leaving || r.serving) return;
+    r.serving = true;
     r.leaving = true;
+    r.happy = 0.7;
     r.leaveVX = (r.lane < 2 ? -1 : 1) * 80 * L.S;
+    lastServed = r.order;
+    serveCd = 0.4;
     const tip = Math.round(40 + 110 * (r.patience / r.maxPatience));
     const gained = 150 + tip;
     addScore(gained);
     combo += 1;
-    floater(laneCenter(r.lane), r.y - 50 * L.S, "CHEERS! +" + gained, "#e8c547");
-    floater(laneCenter(r.lane) + 10 * L.S, r.y - 28 * L.S, "Tip +" + tip, "#f5f0e6");
-    burst(laneCenter(r.lane), r.y - 30 * L.S, "#e8c547", 10, 70 * L.S);
+    const cx = laneCenter(r.lane) + (r.xOff || 0);
+    floaters.push({ x: cx, y: r.y - 58 * L.S, text: "CHEERS! +" + gained, col: "#e8c547", t: 0, life: 1.25, vy: -42 * L.S, scale: 1.15 });
+    floaters.push({ x: cx + 8 * L.S, y: r.y - 34 * L.S, text: "Tip +" + tip, col: "#f5f0e6", t: 0, life: 1.05, vy: -36 * L.S, scale: 1 });
+    burst(cx, r.y - 30 * L.S, "#e8c547", 16, 90 * L.S);
+    burst(cx, r.y - 30 * L.S, "#fffaf0", 8, 60 * L.S);
     SFX.cheers();
     if (tip >= 100) SFX.tip();
     selected = "guinness";
@@ -581,7 +628,7 @@
     drunk = Math.max(0, drunk - dt * 1.15);
 
     spawnTimer -= dt;
-    if (spawnTimer <= 0 && toSpawn.length && waveBanner < 0.9) {
+    if (!testLock && spawnTimer <= 0 && toSpawn.length && waveBanner < 0.9) {
       const ev = toSpawn.shift();
       if (ev.kind === "z") spawnZombie(ev.lane, ev);
       else spawnRegular(ev.lane, ev.order);
@@ -605,10 +652,11 @@
     for (let i = regulars.length - 1; i >= 0; i--) {
       const r = regulars[i];
       r.t += dt;
+      if (r.happy > 0) r.happy = Math.max(0, r.happy - dt);
       if (r.leaving) {
         r.xOff = (r.xOff || 0) + r.leaveVX * dt;
         r.y -= 10 * L.S * dt;
-        if (Math.abs(r.xOff) > L.laneW * 1.2) regulars.splice(i, 1);
+        if (Math.abs(r.xOff) > L.laneW * 1.4) regulars.splice(i, 1);
         continue;
       }
       if (r.arriving) {
@@ -643,7 +691,7 @@
       }
     }
 
-    if (toSpawn.length === 0 && zombies.length === 0 && waveBanner <= 0 && mode === "playing") {
+    if (!testLock && toSpawn.length === 0 && zombies.length === 0 && waveBanner <= 0 && mode === "playing") {
       nextWave();
     }
 
@@ -651,20 +699,32 @@
   }
 
   function firstHitInLane(p) {
-    let best = null, bestY = -Infinity;
+    const hits = [];
     for (let i = 0; i < zombies.length; i++) {
       const z = zombies[i];
       if (z.dead || z.lane !== p.lane) continue;
       const top = z.y - 74 * L.S, bot = z.y - 4 * L.S;
-      if (p.y <= bot && p.y >= top && z.y > bestY) { bestY = z.y; best = { type: "zombie", e: z }; }
+      if (p.y <= bot && p.y >= top) hits.push({ type: "zombie", e: z, y: z.y });
     }
     for (let i = 0; i < regulars.length; i++) {
       const r = regulars[i];
-      if (r.leaving || r.lane !== p.lane) continue;
+      if (r.leaving || r.serving || r.lane !== p.lane) continue;
       const top = r.y - 74 * L.S, bot = r.y - 4 * L.S;
-      if (p.y <= bot && p.y >= top && r.y > bestY) { bestY = r.y; best = { type: "regular", e: r }; }
+      if (p.y <= bot && p.y >= top) hits.push({ type: "regular", e: r, y: r.y });
     }
-    return best;
+    if (!hits.length) return null;
+    hits.sort(function (a, b) { return b.y - a.y; });
+    const front = hits[0];
+    if (front.type === "regular") {
+      // If a zombie is overlapping this regular, the pint goes to the zombie —
+      // overlapping bodies should not be an unfair "OY!" drunk hit.
+      for (let i = 0; i < hits.length; i++) {
+        if (hits[i].type === "zombie" && Math.abs(hits[i].y - front.y) < 40 * L.S) {
+          return hits[i];
+        }
+      }
+    }
+    return front;
   }
 
   function updateParticles(dt) {
@@ -685,16 +745,64 @@
   }
 
   function regularAt(x, y) {
-    for (let i = regulars.length - 1; i >= 0; i--) {
+    // Fat-finger friendly: almost the full lane width, from below the feet
+    // up through the speech bubble (including while they're still walking in).
+    let best = null, bestD = Infinity;
+    const rx = L.laneW * 0.52;
+    const top = 136 * L.S;
+    const bottom = 36 * L.S;
+    for (let i = 0; i < regulars.length; i++) {
       const r = regulars[i];
-      if (r.leaving) continue;
+      if (r.leaving || r.serving) continue;
       const cx = laneCenter(r.lane) + (r.xOff || 0);
-      const bw = 46 * L.S, bh = 86 * L.S;
-      if (x > cx - bw && x < cx + bw && y > r.y - bh && y < r.y + 8 * L.S) return r;
-      // speech bubble
-      if (!r.arriving && y > r.y - 118 * L.S && y < r.y - 70 * L.S && Math.abs(x - cx) < 30 * L.S) return r;
+      if (x > cx - rx && x < cx + rx && y > r.y - top && y < r.y + bottom) {
+        const d = Math.hypot(x - cx, y - (r.y - 40 * L.S));
+        if (d < bestD) { bestD = d; best = r; }
+      }
     }
-    return null;
+    return best;
+  }
+
+  function zombieAt(x, y) {
+    let best = null, bestD = Infinity;
+    const rx = L.laneW * 0.42;
+    const top = 90 * L.S;
+    const bottom = 20 * L.S;
+    for (let i = 0; i < zombies.length; i++) {
+      const z = zombies[i];
+      if (z.dead) continue;
+      const cx = laneCenter(z.lane);
+      if (x > cx - rx && x < cx + rx && y > z.y - top && y < z.y + bottom) {
+        const d = Math.hypot(x - cx, y - (z.y - 36 * L.S));
+        if (d < bestD) { bestD = d; best = z; }
+      }
+    }
+    return best;
+  }
+
+  function handlePlayTap(x, y, sx, sy, isSwipe) {
+    // Prefer serving if this gesture started or ended on a regular.
+    // Never let a sloppy upward flick steal a serve.
+    const r = regularAt(x, y) || regularAt(sx, sy);
+    if (r && !isSwipe) return serveRegular(r);
+
+    if (isSwipe) {
+      throwPint(laneFromX(sx, true));
+      return;
+    }
+
+    const z = zombieAt(x, y) || zombieAt(sx, sy);
+    if (z) {
+      throwPint(z.lane);
+      return;
+    }
+
+    // Lane tap: if it landed in a regular's tall serve zone we already served.
+    // Otherwise throw a pint down the lane (can still hit a regular who is
+    // clearly standing in front — that's the drunk risk).
+    if (!inPlay(x, y) && y > L.counterY + L.counterH) return;
+    const lane = laneFromX(x, true);
+    throwPint(lane);
   }
 
   /* -------------------- Input -------------------- */
@@ -723,9 +831,6 @@
     if (id === "again") { SFX.click(); startGame(); return; }
     if (id === "share") { SFX.click(); doShare(); return; }
     if (id === "how") { howTo = !howTo; SFX.click(); return; }
-    if (id === "item-guinness") { selected = "guinness"; SFX.click(); return; }
-    if (id === "item-whiskey") { selected = "whiskey"; SFX.click(); return; }
-    if (id === "item-toastie") { selected = "toastie"; SFX.click(); return; }
   }
 
   function doShare() {
@@ -800,17 +905,11 @@
     }
     if (mode === "gameover" || mode === "dying") return;
     if (mode !== "playing") return;
-    if (dy < -30 * L.S && Math.abs(dy) > Math.abs(dx) * 0.65) {
-      const lane = laneFromX(pointer.sx, true);
-      throwPint(lane);
-      return;
-    }
-    const r = regularAt(p.x, p.y);
-    if (r) { serveRegular(r); return; }
-    if (!inPlay(p.x, p.y) && p.y > L.counterY + L.counterH) return;
-    const lane = laneFromX(p.x, true);
-    if (selected === "guinness") throwPint(lane);
-    else serveLane(lane, selected);
+    // A real swipe must travel a good distance. Fat-finger taps often drift
+    // 20–40px upward and used to be misread as a throw, so the regular
+    // "wouldn't accept" their order (they got a pint in the face instead).
+    const isSwipe = dy < -72 * L.S && Math.abs(dy) > Math.abs(dx) * 0.85 && !regularAt(pointer.sx, pointer.sy) && !regularAt(p.x, p.y);
+    handlePlayTap(p.x, p.y, pointer.sx, pointer.sy, isSwipe);
   }
 
   function onKey(e) {
@@ -820,27 +919,48 @@
     if (mode === "title" && (k === "Enter" || k === " " || k === "Spacebar")) { e.preventDefault(); startGame(); return; }
     if (mode === "gameover" && (k === "Enter" || k === " " || k === "Spacebar")) { e.preventDefault(); startGame(); return; }
     if (mode !== "playing") return;
-    if (k === "1") selected = "guinness";
-    if (k === "2") selected = "whiskey";
-    if (k === "3") selected = "toastie";
     if (k === "ArrowLeft" || k === "a" || k === "A") bartenderLane = clamp(bartenderLane - 1, 0, LANES - 1);
     if (k === "ArrowRight" || k === "d" || k === "D") bartenderLane = clamp(bartenderLane + 1, 0, LANES - 1);
     if (k === "ArrowUp" || k === " " || k === "Spacebar" || k === "w" || k === "W") {
       e.preventDefault();
       throwPint(bartenderLane);
     }
-    if (k === "q" || k === "Q") serveLane(bartenderLane, "whiskey");
-    if (k === "e" || k === "E") serveLane(bartenderLane, "toastie");
-    if (k === "1" || k === "2" || k === "3") { /* already selected */ }
-    if (k >= "1" && k <= "4" && e.shiftKey) throwPint((+k) - 1);
+    if (k === "ArrowDown" || k === "s" || k === "S" || k === "Enter" || k === "q" || k === "Q" || k === "e" || k === "E") {
+      e.preventDefault();
+      serveFrontInLane(bartenderLane);
+    }
+    if (k >= "1" && k <= "4") {
+      bartenderLane = (+k) - 1;
+      if (e.shiftKey) throwPint(bartenderLane);
+    }
   }
 
+  function onTouchStart(e) {
+    e.preventDefault();
+    if (pointer.down) return; // pointer event already handled this gesture
+    onDown(e);
+  }
+  function onTouchMove(e) {
+    e.preventDefault();
+    if (!pointer.down) return;
+    // If pointermove is also firing, onMove is harmless to call twice with same coords
+    onMove(e);
+  }
+  function onTouchEnd(e) {
+    e.preventDefault();
+    if (!pointer.down) return;
+    onUp(e);
+  }
   window.addEventListener("pointerdown", onDown, { passive: false });
   window.addEventListener("pointermove", onMove, { passive: false });
   window.addEventListener("pointerup", onUp, { passive: false });
   window.addEventListener("pointercancel", onUp, { passive: false });
   window.addEventListener("keydown", onKey);
-  ["touchstart", "touchmove", "touchend", "gesturestart", "gesturechange"].forEach(function (ev) {
+  document.addEventListener("touchstart", onTouchStart, { passive: false });
+  document.addEventListener("touchmove", onTouchMove, { passive: false });
+  document.addEventListener("touchend", onTouchEnd, { passive: false });
+  document.addEventListener("touchcancel", onTouchEnd, { passive: false });
+  ["gesturestart", "gesturechange"].forEach(function (ev) {
     document.addEventListener(ev, function (e) { e.preventDefault(); }, { passive: false });
   });
   document.addEventListener("dblclick", function (e) { e.preventDefault(); }, { passive: false });
@@ -1345,7 +1465,7 @@
     }
 
     drawBartender();
-    drawItemButtons();
+    drawHintBar();
   }
 
   function drawBartender() {
@@ -1401,11 +1521,11 @@
     ctx.quadraticCurveTo(24 * S, 18 * S + armLift * S * 0.1, 22 * S, 8 * S + armLift * 0.3);
     ctx.stroke();
 
-    // item in hand
+    // item in hand — pint by default; briefly hold whatever was just served
     if (mode !== "dying") {
-      if (selected === "guinness") drawPintGlass(22 * S, 2 * S + armLift * 0.15, 0.85 * S, -0.2 + armLift * 0.01);
-      else if (selected === "whiskey") drawWhiskey(20 * S, 6 * S, 0.95 * S);
-      else drawToastie(20 * S, 6 * S, 1.05 * S);
+      if (serveCd > 0 && lastServed === "whiskey") drawWhiskey(20 * S, 6 * S, 1.05 * S);
+      else if (serveCd > 0 && lastServed === "toastie") drawToastie(20 * S, 6 * S, 1.15 * S);
+      else drawPintGlass(22 * S, 2 * S + armLift * 0.15, 0.85 * S, -0.2 + armLift * 0.01);
     }
 
     // head
@@ -1449,44 +1569,25 @@
     ctx.restore();
   }
 
-  function drawItemButtons() {
-    const { gx, gw, S, gy, gh, sBot, framed, btnH } = L;
-    const pad = 8 * S;
+  function drawHintBar() {
+    const { gx, gw, S, gy, gh, framed, btnH } = L;
     const y = gy + gh - btnH - (framed ? 8 : Math.max(6, L.sBot));
-    const muteW = 0; // mute is in HUD
-    const w = (gw - pad * 4) / 3;
-    const items = [
-      { id: "item-guinness", label: "GUINNESS", sub: "Throw at zombies" },
-      { id: "item-whiskey", label: "WHISKEY", sub: "Serve regulars" },
-      { id: "item-toastie", label: "TOASTIE", sub: "Serve regulars" }
-    ];
-    const kinds = ["guinness", "whiskey", "toastie"];
-    for (let i = 0; i < 3; i++) {
-      const x = gx + pad + i * (w + pad);
-      const on = selected === kinds[i];
-      const pr = pressedBtn === items[i].id;
-      fillRound(x, y + (pr ? 2 : 0), w, btnH - 4, 10 * S,
-        on ? "#2e5a38" : "#24160c",
-        on ? "#e8c547" : "rgba(201,162,39,0.45)",
-        on ? 2.4 : 1.2);
-      if (on) {
-        ctx.fillStyle = "rgba(232,197,71,0.12)";
-        fillRound(x, y + (pr ? 2 : 0), w, btnH - 4, 10 * S, "rgba(232,197,71,0.12)");
-      }
-      const cx = x + 22 * S, cy = y + btnH * 0.45;
-      if (i === 0) drawPintGlass(cx, cy, 0.95 * S, 0);
-      else if (i === 1) drawWhiskey(cx, cy, 1.15 * S);
-      else drawToastie(cx, cy, 1.2 * S);
-      ctx.textAlign = "left";
-      ctx.textBaseline = "middle";
-      ctx.fillStyle = "#f4e8c8";
-      ctx.font = "bold " + Math.round(11 * S) + "px Palatino, Georgia, serif";
-      ctx.fillText(items[i].label, x + 38 * S, y + btnH * 0.38);
-      ctx.fillStyle = "rgba(244,232,200,0.65)";
-      ctx.font = Math.round(8.5 * S) + "px system-ui, sans-serif";
-      ctx.fillText(items[i].sub, x + 38 * S, y + btnH * 0.64);
-      addBtn(items[i].id, x, y, w, btnH);
-    }
+    const x = gx + 8 * S;
+    const w = gw - 16 * S;
+    const h = btnH - 4;
+    fillRound(x, y, w, h, 10 * S, "#24160c", "rgba(201,162,39,0.5)", 1.4);
+    const cy = y + h / 2;
+    // reminder icons only — not buttons, no mode swapping
+    drawPintGlass(x + 16 * S, cy, 0.68 * S, 0);
+    drawWhiskey(x + 34 * S, cy + 1 * S, 0.8 * S);
+    drawToastie(x + 50 * S, cy + 1 * S, 0.82 * S);
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "#f4e8c8";
+    ctx.font = "bold " + Math.round(12 * S) + "px Palatino, Georgia, serif";
+    ctx.fillText("Tap a regular to serve", x + 66 * S, cy - 7 * S);
+    ctx.fillStyle = "rgba(244,232,200,0.88)";
+    ctx.fillText("Tap a lane to throw a pint", x + 66 * S, cy + 8 * S);
   }
 
   function drawZombie(z) {
@@ -1593,7 +1694,8 @@
     const S = L.S;
     const x = laneCenter(r.lane) + (r.xOff || 0);
     const y = r.y;
-    const bob = r.arriving ? Math.sin(r.t * 10) * 1.5 * S : Math.sin(r.t * 2) * 0.8 * S;
+    const hop = (r.happy > 0) ? Math.abs(Math.sin((0.7 - r.happy) * 14)) * 10 * S : 0;
+    const bob = hop + (r.arriving ? Math.sin(r.t * 10) * 1.5 * S : Math.sin(r.t * 2) * 0.8 * S);
     const grumpy = !r.arriving && !r.leaving && r.patience < r.maxPatience * 0.35;
     ctx.save();
     ctx.translate(x, y + bob);
@@ -1671,7 +1773,9 @@
     ctx.strokeStyle = "#8a4a3a";
     ctx.lineWidth = 1.2 * S;
     ctx.beginPath();
-    if (r.leaving && r.patience <= 0) {
+    if (r.happy > 0 || (r.leaving && r.patience > 0)) {
+      ctx.arc(0, -48 * S, 5 * S, 0.15, Math.PI - 0.15);
+    } else if (r.leaving && r.patience <= 0) {
       ctx.arc(0, -46 * S, 3.5 * S, Math.PI + 0.2, -0.2); // frown
     } else if (grumpy) {
       ctx.moveTo(-3.5 * S, -46 * S); ctx.lineTo(3.5 * S, -47 * S);
@@ -1738,7 +1842,11 @@
       const f = floaters[i];
       ctx.globalAlpha = 1 - f.t / f.life;
       ctx.fillStyle = f.col;
-      ctx.font = "bold " + Math.round(13 * L.S) + "px Palatino, Georgia, serif";
+      const fs = Math.round(13 * L.S * (f.scale || 1));
+      ctx.font = "bold " + fs + "px Palatino, Georgia, serif";
+      ctx.strokeStyle = "rgba(20,10,6,0.55)";
+      ctx.lineWidth = 3 * L.S;
+      ctx.strokeText(f.text, f.x, f.y);
       ctx.fillText(f.text, f.x, f.y);
     }
     ctx.globalAlpha = 1;
@@ -1929,10 +2037,10 @@
       ctx.fillStyle = "#f4e8c8";
       ctx.font = Math.round(12 * S) + "px system-ui, sans-serif";
       const lines = [
-        "Tap a lane — or swipe up — to throw a pint of Guinness.",
+        "Tap a regular (or their bubble) to serve them — they'll get",
+        "exactly what they asked for. No swapping buttons needed.",
+        "Tap a lane, a zombie, or swipe up to throw a pint of Guinness.",
         "Hit the zombies before they reach the bar.",
-        "Regulars will ask for whiskey or a toastie. Tap them to serve.",
-        "Or pick Whiskey / Toastie and tap their lane.",
         "Don't hit the regulars with a pint — you'll start getting drunk.",
         "If you get plastered, the zombies take over and eat you!",
         "Zombies at the bar cost a life. Last as many waves as you can."
@@ -1946,7 +2054,7 @@
       ctx.textAlign = "center";
       ctx.fillStyle = "rgba(244,232,200,0.7)";
       ctx.font = Math.round(11 * S) + "px system-ui, sans-serif";
-      ctx.fillText("Throw pints  •  Serve the regulars  •  Don't get drunk", gx + gw / 2, hy + 58 * S);
+      ctx.fillText("Tap a regular to serve  •  Tap a lane to throw a pint", gx + gw / 2, hy + 58 * S);
     }
   }
 
@@ -2118,7 +2226,9 @@
   resize();
   requestAnimationFrame(loop);
 
+  window.__POLLY_VERSION__ = "2";
   window.__POLLY__ = {
+    version: "2",
     get mode() { return mode; },
     get score() { return score; },
     get wave() { return wave; },
@@ -2128,6 +2238,39 @@
     get regularCount() { return regulars.length; },
     start: startGame,
     throwPint: throwPint,
+    serveRegular: serveRegular,
+    regularAt: regularAt,
+    handlePlayTap: handlePlayTap,
+    setTestLock: function (on) { testLock = !!on; },
+    clearEntities: function () {
+      zombies = []; regulars = []; pints = []; toSpawn = []; particles = []; floaters = [];
+    },
+    spawnRegularForTest: function (lane, order, yRatio) {
+      spawnRegular(lane, order || "whiskey");
+      const r = regulars[regulars.length - 1];
+      r.arriving = false;
+      r.y = L.floorY + L.floorH * (yRatio == null ? 0.55 : yRatio);
+      r.waitY = r.y;
+      r.bubblePop = 0.25;
+      return { lane: r.lane, order: r.order, x: laneCenter(r.lane) + (r.xOff || 0), y: r.y, bodyY: r.y - 40 * L.S };
+    },
+    spawnZombieForTest: function (lane, yRatio) {
+      spawnZombie(lane, {});
+      const z = zombies[zombies.length - 1];
+      z.y = L.floorY + L.floorH * (yRatio == null ? 0.45 : yRatio);
+      return { lane: z.lane, x: laneCenter(z.lane), y: z.y, bodyY: z.y - 36 * L.S };
+    },
+    snapshots: function () {
+      return {
+        score: score,
+        regulars: regulars.map(function (r) {
+          return { lane: r.lane, order: r.order, y: r.y, x: laneCenter(r.lane) + (r.xOff || 0), leaving: !!r.leaving, serving: !!r.serving };
+        }),
+        zombies: zombies.map(function (z) {
+          return { lane: z.lane, y: z.y, x: laneCenter(z.lane), dead: !!z.dead, hp: z.hp };
+        })
+      };
+    },
     resize: resize,
     ready: true
   };
